@@ -102,3 +102,5 @@ S1000XR 의 경우 왼쪽 페어링을 분리하면 위 그림과 같은 소켓�
 
 [https://www.youtube.com/watch?v=BmVxNDDYLkI](https://www.youtube.com/watch?v=BmVxNDDYLkI)
 
+### 바이크 라이딩을 좋아하시는 엔지니어 여러분들 이 프로젝트에 참여해주세요
+
