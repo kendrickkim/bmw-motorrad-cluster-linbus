@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>LIN capture</title>
+  <style>
+    body { font-family: Consolas, monospace; margin: 16px; background: #fff; color: #111; }
+    h2 { margin: 16px 0 8px; font-size: 16px; }
+    h2 button {
+      font: inherit;
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+    }
+    table { border-collapse: collapse; margin-bottom: 8px; background: #fff; color: #111; }
+    th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: center; }
+    th { background: #f3f3f3; }
+    tr:nth-child(even) { background: #fafafa; }
+    .note { margin: 0 0 16px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <p class="note">후륜 속도는 (rear_wheel_rpm × 60 × 2017) / 1000 / 1000 으로 계산한다. 바이크에서는 0.14로 고정한 것 같다.</p>
+    <section>
+      <h2>
+        <button type="button" @click="timelineOpen = !timelineOpen">
+          {{ timelineOpen ? "▼" : "▶" }} 점화 On ({{ timeline.length }})
+        </button>
+      </h2>
+      <table v-if="timelineOpen">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>RPM</th>
+            <th>RPM 변화</th>
+            <th>기어</th>
+            <th>스로틀</th>
+            <th>후륜 속도</th>
+            <th>엔진 온도</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(row, index) in timeline" :key="index">
+            <td>{{ index }}</td>
+            <td>{{ row.rpm }}</td>
+            <td>{{ row.rpmChange }}</td>
+            <td>{{ row.gear }}</td>
+            <td>{{ row.throttle }}</td>
+            <td>{{ row.speed }}</td>
+            <td>{{ row.engineTemp }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+    <section v-for="group in groups" :key="group.id">
+      <h2>
+        <button type="button" @click="group.open = !group.open">
+          {{ group.open ? "▼" : "▶" }} {{ group.id }} ({{ group.rows.length }})
+        </button>
+      </h2>
+      <table v-if="group.open">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th v-for="col in group.cols" :key="col">D{{ col + 1 }}</th>
+            <th v-for="label in group.labels" :key="label">{{ label }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(row, index) in group.rows" :key="index">
+            <td>{{ index }}</td>
+            <td v-for="col in group.cols" :key="col">{{ row.bytes[col] ?? "" }}</td>
+            <td v-for="(value, fieldIndex) in row.fields" :key="fieldIndex">{{ value }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script>
+    const { createApp } = Vue;
+
+    createApp({
+      data() {
+        return {
+          groups: [],
+          timeline: [],
+          timelineOpen: false,
+        };
+      },
+      mounted() {
+        fetch("lin_capture.txt")
+          .then((response) => response.text())
+          .then((text) => this.parseData(text));
+      },
+      methods: {
+        parseData(text) {
+          const dataById = new Map();
+
+          for (let line of text.split("\n")) {
+            line = line.trim();
+            if (!line) continue;
+
+            const lineData = line.split(" ");
+            const id = lineData[0];
+            if (!dataById.has(id)) {
+              dataById.set(id, []);
+            }
+            dataById.get(id).push(lineData.slice(1));
+          }
+
+          this.groups = [...dataById.entries()].map(([id, rows]) => ({
+            id,
+            open: false,
+            labels: this.labelsFor(id),
+            rows: rows.map((bytes, index) => ({
+              bytes,
+              fields: this.describeRow(id, bytes, index > 0 ? rows[index - 1] : null),
+            })),
+            cols: Array.from(
+              { length: rows.reduce((max, row) => Math.max(max, row.length), 0) },
+              (_, col) => col
+            ),
+          }));
+          this.groups.sort((a, b) => {
+            const aHex = /^0x[0-9a-f]+$/i.test(a.id);
+            const bHex = /^0x[0-9a-f]+$/i.test(b.id);
+            if (aHex && bHex) return Number.parseInt(a.id, 16) - Number.parseInt(b.id, 16);
+            if (aHex) return -1;
+            if (bHex) return 1;
+            return a.id.localeCompare(b.id);
+          });
+          this.timeline = this.buildTimeline(text);
+        },
+        buildTimeline(text) {
+          let ignition = "";
+          let rpm = "";
+          let gear = "";
+          let throttle = "";
+          let speed = "";
+          let engineTemp = "";
+          let prevRpm = null;
+          const rows = [];
+
+          for (let line of text.split("\n")) {
+            line = line.trim();
+            if (!line) continue;
+            const parts = line.split(" ");
+            const id = parts[0].toLowerCase();
+            const bytes = parts.slice(1);
+
+            if (id === "0x20") {
+              const fields = this.describe20(bytes);
+              if (fields[0]) ignition = fields[0];
+              if (fields[1] !== "") speed = fields[1];
+            } else if (id === "0xe2") {
+              const fields = this.describeE2(bytes);
+              if (fields[0] !== "") rpm = fields[0];
+              if (fields[1] !== "") gear = fields[1];
+              if (fields[2] !== "") throttle = fields[2];
+              if (fields[3] !== "") engineTemp = fields[3];
+            } else {
+              continue;
+            }
+
+            if (ignition !== "On") {
+              prevRpm = rpm === "" ? null : Number(rpm);
+              continue;
+            }
+
+            const rpmNum = rpm === "" ? null : Number(rpm);
+            let rpmChange = "";
+            if (rpmNum != null && prevRpm != null) {
+              const delta = rpmNum - prevRpm;
+              rpmChange = delta > 0 ? "+" + delta : String(delta);
+            }
+            const last = rows[rows.length - 1];
+            if (
+              last &&
+              last.rpm === rpm &&
+              last.gear === gear &&
+              last.throttle === throttle &&
+              last.speed === speed &&
+              last.engineTemp === engineTemp
+            ) {
+              continue;
+            }
+            if (rpmNum != null) prevRpm = rpmNum;
+            rows.push({ rpm, rpmChange, gear, throttle, speed, engineTemp });
+          }
+
+          return rows;
+        },
+        labelsFor(id) {
+          if (id === "0x20") return ["점화", "후륜 속도", "연료 잔여거리", "연료 게이지", "주변광"];
+          if (id.toLowerCase() === "0xe2") return ["RPM", "기어", "스로틀", "엔진 온도", "ASC (Automatic Stability Control)", "오일"];
+          if (id.toLowerCase() === "0xe9") return ["평균 속도", "속도", "전압", "연료 이상", "일반 이상"];
+          if (id.toLowerCase() === "0x14") return this.handleLabels();
+          return [];
+        },
+        // 캡처 행은 ID를 뺀 값이다. Java data[n]은 행의 n - 1번째 바이트다.
+        byteAt(row, dataIndex) {
+          const token = row[dataIndex - 1];
+          if (token == null || token === "") return null;
+          const value = Number.parseInt(token, 16);
+          return Number.isNaN(value) ? null : value & 0xff;
+        },
+        describeRow(id, row, prev) {
+          if (id === "0x20") return this.describe20(row);
+          if (id.toLowerCase() === "0xe2") return this.describeE2(row);
+          if (id.toLowerCase() === "0xe9") return this.describeE9(row);
+          if (id.toLowerCase() === "0x14") return this.describe14(row, prev);
+          return [];
+        },
+        handleLabels() {
+          return [
+            "Horn", "방향지시등 취소", "방향지시등 오른쪽", "방향지시등 왼쪽", "크루즈", "경보", "ABS", "ESA",
+            "?(7)", "?(6)", "Trip", "Info", "크루즈 Set", "크루즈 Reset", "하이빔", "?(0)",
+            "신호", "휠 버튼", "원더 휠 회전", "휠 방향",
+          ];
+        },
+        bitOn(value, bit) {
+          return (value & (1 << bit)) !== 0 ? "on" : "off";
+        },
+        describe20(row) {
+          const data2 = this.byteAt(row, 2);
+          const data3 = this.byteAt(row, 3);
+          const data4 = this.byteAt(row, 4);
+          const data5 = this.byteAt(row, 5);
+          const data6 = this.byteAt(row, 6);
+          if (data2 == null || data3 == null || data4 == null || data5 == null || data6 == null) {
+            return ["", "", "", "", ""];
+          }
+
+          const ignitionValue = (data2 >> 4) & 0x0f;
+          let ignition = "";
+          if (ignitionValue <= 0x3) ignition = "Off";
+          else if (ignitionValue <= 0x7) ignition = "On";
+
+          let rearSpeed = "";
+          if (data3 !== 0xff && (data4 & 0x0f) !== 0x0f) {
+            const rearWheelRpm = data3 | ((data4 & 0x0f) << 8);
+            rearSpeed = ((rearWheelRpm * 60 * 2017) / 1000 / 1000).toFixed(2);
+          }
+
+          let fuelRange = "";
+          let fuelGauge = "";
+          if (((data4 >> 4) & 0x0f) !== 0x0f && data5 !== 0xff) {
+            const rangeKm = ((data4 >> 4) & 0x0f) + ((data5 & 0x0f) * 16) + (((data5 >> 4) & 0x0f) * 256);
+            fuelRange = String(rangeKm);
+            fuelGauge = (rangeKm / 250).toFixed(3);
+          }
+
+          let ambientLight = "";
+          if ((data6 & 0x0f) !== 0x0f) {
+            ambientLight = String(data6 & 0x0f);
+          }
+
+          return [ignition, rearSpeed, fuelRange, fuelGauge, ambientLight];
+        },
+        describeE2(row) {
+          const data1 = this.byteAt(row, 1);
+          const data2 = this.byteAt(row, 2);
+          const data3 = this.byteAt(row, 3);
+          const data4 = this.byteAt(row, 4);
+          const data5 = this.byteAt(row, 5);
+          if (data1 == null || data2 == null || data3 == null || data4 == null || data5 == null) {
+            return ["", "", "", "", "", ""];
+          }
+
+          let rpm = "";
+          if (data1 !== 0xff && (data2 & 0x0f) !== 0x0f) {
+            rpm = String((data1 + ((data2 & 0x0f) * 255)) * 5);
+          }
+
+          const gears = { 0x1: "1", 0x2: "N", 0x4: "2", 0x7: "3", 0x8: "4", 0xb: "5", 0xd: "6" };
+          let gear = "";
+          if (((data2 >> 4) & 0x0f) !== 0x0f) {
+            gear = gears[(data2 >> 4) & 0x0f] ?? "";
+          }
+
+          let throttle = "";
+          if (data3 !== 0xff) {
+            const minPosition = 36;
+            const maxPosition = 236;
+            let throttlePosition = ((data3 - minPosition) * 100) / (maxPosition - minPosition);
+            if (throttlePosition < 0) throttlePosition = 0;
+            else if (throttlePosition > 100) throttlePosition = 100;
+            throttle = throttlePosition.toFixed(1);
+          }
+
+          let engineTemp = "";
+          if (data4 !== 0xff) {
+            engineTemp = ((data4 * 0.75) - 25).toFixed(2);
+          }
+
+          let asc = "";
+          if (((data5 >> 4) & 0x0f) !== 0x0f) {
+            const ascValue = (data5 >> 4) & 0x0f;
+            if (ascValue === 0x1 || ascValue === 0x9) asc = "개입";
+            else if ([0x2, 0x5, 0x6, 0x7, 0xa, 0xd, 0xe].includes(ascValue)) asc = "오류";
+            else if (ascValue === 0x3 || ascValue === 0xb) asc = "자가진단";
+            else if (ascValue === 0x8) asc = "해제";
+          }
+
+          let oil = "";
+          if ((data5 & 0x0f) !== 0x0f) {
+            const oilValue = data5 & 0x0f;
+            oil = [0x2, 0x6, 0xa, 0xe].includes(oilValue) ? "부족" : "정상";
+          }
+
+          return [rpm, gear, throttle, engineTemp, asc, oil];
+        },
+        describeE9(row) {
+          const data1 = this.byteAt(row, 1);
+          const data2 = this.byteAt(row, 2);
+          const data3 = this.byteAt(row, 3);
+          const data4 = this.byteAt(row, 4);
+          const data5 = this.byteAt(row, 5);
+          if (data1 == null || data2 == null || data3 == null || data4 == null || data5 == null) {
+            return ["", "", "", "", ""];
+          }
+
+          let avgSpeed = "";
+          if (data1 !== 0xff && (data2 & 0x0f) !== 0x0f) {
+            avgSpeed = (
+              (((data1 >> 4) & 0x0f) * 2) +
+              ((data1 & 0x0f) * 0.125) +
+              ((data2 & 0x0f) * 32)
+            ).toFixed(3);
+          }
+
+          let speed = "";
+          if (data3 !== 0xff) speed = String(data3 * 2);
+
+          let voltage = "";
+          if (data4 !== 0xff) voltage = (data4 / 10).toFixed(1);
+
+          let fuelFault = "";
+          if (((data5 >> 4) & 0x0f) !== 0x0f) {
+            const fuelValue = (data5 >> 4) & 0x0f;
+            fuelFault = [0x2, 0x6, 0xa, 0xe].includes(fuelValue) ? "이상" : "정상";
+          }
+
+          let generalFault = "";
+          if ((data5 & 0x0f) !== 0x0f) {
+            const value = data5 & 0x0f;
+            const flags = [];
+            if ([0x1, 0x5, 0xd].includes(value)) flags.push("노란 점멸");
+            if ([0x2, 0x6, 0xa, 0xe].includes(value)) flags.push("노란 점등");
+            if ([0x4, 0x5, 0x6, 0x7, 0x9].includes(value)) flags.push("빨간 점멸");
+            if ([0x8, 0x9, 0xa, 0xb].includes(value)) flags.push("빨간 점등");
+            generalFault = flags.join(", ");
+          }
+
+          return [avgSpeed, speed, voltage, fuelFault, generalFault];
+        },
+        describe14(row, prev) {
+          const buttons1 = this.byteAt(row, 2);
+          const buttons2 = this.byteAt(row, 3);
+          const wheelInOut = this.byteAt(row, 4);
+          const wheelValue = this.byteAt(row, 6);
+          if (buttons1 == null || buttons2 == null || wheelInOut == null || wheelValue == null) {
+            return this.handleLabels().map(() => "");
+          }
+
+          const bits = (value) => [7, 6, 5, 4, 3, 2, 1, 0].map((bit) => this.bitOn(value, bit));
+
+          let signal = "off";
+          if (buttons1 === 0x10) signal = "Left";
+          else if (buttons1 === 0x20) signal = "Right";
+          else if (buttons1 === 0x40) signal = "Center";
+
+          let wheelButton = "off";
+          if (wheelInOut === 0xfd) wheelButton = "Left";
+          else if (wheelInOut === 0xfe) wheelButton = "Right";
+
+          let wheelDirection = "";
+          const previousValue = prev ? this.byteAt(prev, 6) : null;
+          if (previousValue != null && previousValue !== wheelValue) {
+            let diff = wheelValue - previousValue;
+            if (diff > 127) diff -= 256;
+            if (diff < -127) diff += 256;
+            if (diff > 0) wheelDirection = "up";
+            else if (diff < 0) wheelDirection = "down";
+          }
+
+          const rotation = "0x" + wheelValue.toString(16).toUpperCase().padStart(2, "0");
+          return [...bits(buttons1), ...bits(buttons2), signal, wheelButton, rotation, wheelDirection];
+        },
+      },
+    }).mount("#app");
+  </script>
+</body>
+</html>
