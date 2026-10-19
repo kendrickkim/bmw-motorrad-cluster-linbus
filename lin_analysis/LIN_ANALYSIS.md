@@ -18,8 +18,8 @@ For parsing and UI implementation, see:
 2. [Message ID overview](#message-id-overview)
 3. [ID `0x14` — Left handle / Wonder Wheel](#id-0x14--left-handle--wonder-wheel)
 4. [ID `0x20` — Ignition / rear speed / fuel range / ambient light](#id-0x20--ignition--rear-speed--fuel-range--ambient-light)
-5. [ID `0x25` — Odometer](#id-0x25--odometer)
-6. [ID `0x2B` / `0x2E`](#id-0x2b--0x2e)
+5. [ID `0x2B` — Multiplexed payloads / odometer](#id-0x2b--multiplexed-payloads--odometer)
+6. [ID `0x2E`](#id-0x2e)
 7. [ID `0xE2` — RPM / gear / throttle / engine temperature](#id-0xe2--rpm--gear--throttle--engine-temperature)
 8. [ID `0xE9` — Average speed / speed / voltage / faults](#id-0xe9--average-speed--speed--voltage--faults)
 
@@ -67,8 +67,7 @@ Example: value `0xA1`
 |:--:|:------:|----------|
 | `0x14` | Decoded | Left-handle buttons, Wonder Wheel In/Out, rotation, and direction |
 | `0x20` | Decoded | Ignition, rear speed, fuel range, fuel gauge, ambient light |
-| `0x25` | Unconfirmed | Odometer (km). This ID has not been confirmed. |
-| `0x2B` | Unknown | — |
+| `0x2B` | Decoded | Several payloads in one frame. Data-1 selects the kind. Odometer (km) when Data-1 is `0x25`. |
 | `0x2E` | Unknown | — |
 | `0xE2` | Decoded | Engine RPM, gear, throttle, engine temperature, ASC (Automatic Stability Control), oil |
 | `0xE9` | Not accurate | Average speed, speed, voltage, fuel fault, general fault. This decode is not accurate. |
@@ -202,25 +201,34 @@ ambient_light = Data-5 & 0x0F
 
 ---
 
-## ID `0x25` — Odometer
+## ID `0x2B` — Multiplexed payloads / odometer
 
-ID `0x25` has not been confirmed.
+`0x2B` carries several payloads in one frame. In this capture Data-0 is `0x55`, and Data-1 selects the kind. The odometer applies only when Data-1 is `0x25`.
+
+| Data | Odometer (`Data-1 = 0x25`) |
+|:----:|----------------------------|
+| Data-0 | `0x55` in this capture |
+| Data-1 | `0x25` |
+| Data-2 | Low byte |
+| Data-3 | Middle byte |
+| Data-4 | High byte |
+| Data-5 | Not part of the distance |
 
 ```text
-odometer_km = (Data-2 × 65536) + (Data-1 × 256) + Data-0
+0x2B  0x55  0x25  Data-2  Data-3  Data-4  Data-5
+odometer_km = (Data-4 × 65536) + (Data-3 × 256) + Data-2
 ```
 
-Equivalent to `(Data-2 << 16) | (Data-1 << 8) | Data-0`.
+Equivalent to `(Data-4 << 16) | (Data-3 << 8) | Data-2`.
 
-> Indexes are **Data-n** (excluding Message ID). In a raw buffer that is `buf[1]…buf[3]`.
+> Indexes are **Data-n** (excluding Message ID). In a raw buffer that is `buf[3]…buf[5]`.
 
 ---
 
-## ID `0x2B` / `0x2E`
+## ID `0x2E`
 
 | ID | Status |
 |:--:|:------:|
-| `0x2B` | Unknown |
 | `0x2E` | Unknown |
 
 ---
