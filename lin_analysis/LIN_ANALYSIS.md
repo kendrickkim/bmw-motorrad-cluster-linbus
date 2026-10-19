@@ -352,7 +352,7 @@ Blank when the nibble is `0xF`.
 
 ### Data-4 — General fault (low nibble)
 
-Blank when the nibble is `0xF` or no flag below is set. More than one flag can be active.
+When the nibble is `0xF` or no flag below is set, there is no fault. More than one flag can be active.
 
 | Flag | Values |
 |:----:|:------:|
